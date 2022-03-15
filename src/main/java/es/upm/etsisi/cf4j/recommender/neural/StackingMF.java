@@ -5,7 +5,6 @@ import es.upm.etsisi.cf4j.data.User;
 import es.upm.etsisi.cf4j.recommender.Recommender;
 import org.deeplearning4j.nn.conf.ComputationGraphConfiguration;
 import org.deeplearning4j.nn.conf.NeuralNetConfiguration;
-import org.deeplearning4j.nn.conf.graph.ElementWiseVertex;
 import org.deeplearning4j.nn.conf.graph.MergeVertex;
 import org.deeplearning4j.nn.conf.layers.DenseLayer;
 import org.deeplearning4j.nn.conf.layers.EmbeddingLayer;
@@ -20,12 +19,7 @@ import org.nd4j.linalg.lossfunctions.LossFunctions;
 import java.util.Arrays;
 import java.util.Map;
 
-/**
- * Implements He, X., Liao, L., Zhang, H., Nie, L., Hu, X., &amp; Chua, T. S. (2017, April). Neural
- * collaborative filtering. In Proceedings of the 26th international conference on world wide web
- * (pp. 173-182).
- */
-public class NeuMF extends Recommender {
+public class StackingMF extends Recommender {
 
   /** Neural network * */
   private final ComputationGraph network;
@@ -34,10 +28,7 @@ public class NeuMF extends Recommender {
   private final int numEpochs;
 
   /** Number of GMF latent factors */
-  protected final int numFactorsGMF;
-
-  /** Number of MLP latent factors */
-  protected final int numFactorsMLP;
+  protected final int numFactors;
 
   /** Learning Rate */
   protected final double learningRate;
@@ -45,19 +36,21 @@ public class NeuMF extends Recommender {
   /** Array of layers neurons */
   protected final int[] layers;
 
+  /** Map of Recommenders */
+  protected final Map<String, Recommender> recommenders;
+
   /**
    * Model constructor from a Map containing the model's hyper-parameters values. Map object must
    * contains the following keys:
    *
    * <ul>
-   *   <li><b>numFactorsGMF</b> (optional): int value with the number of latent factors of GMF net.
-   *       If missing, default 10 GMF latent factors are used.
-   *   <li><b>numFactorsMLP</b> (optional): int value with the number of latent factors of MLP net.
-   *       If missing, default 10 MLP latent factors are used.
+   *   <li><b>numFactors</b> (optional): int value with the number of latent factors. If missing,
+   *       default 10 latent factors are used.
    *   <li><b>numEpochs</b>: int value with the number of epochs.
    *   <li><b>learningRate</b>: double value with the learning rate.
    *   <li><b>layers</b> (optional): Array of layers neurons. If missing, default [10] Array is
    *       used.
+   *   <li><b>recommenders: Map with the recommenders name and the fitted recommenders instances.
    *   <li><b><em>seed</em></b> (optional): random seed for random numbers generation. If missing,
    *       random value is used.
    * </ul>
@@ -65,14 +58,14 @@ public class NeuMF extends Recommender {
    * @param datamodel DataModel instance
    * @param params Model's hyper-parameters values
    */
-  public NeuMF(DataModel datamodel, Map<String, Object> params) {
+  public StackingMF(DataModel datamodel, Map<String, Object> params) {
     this(
         datamodel,
-        params.containsKey("numFactorsGMF") ? (int) params.get("numFactorsGMF") : 10,
-        params.containsKey("numFactorsMLP") ? (int) params.get("numFactorsMLP") : 10,
+        params.containsKey("numFactors") ? (int) params.get("numFactors") : 10,
         (int) params.get("numEpochs"),
         (double) params.get("learningRate"),
-        params.containsKey("layers") ? (int[]) params.get("layers") : new int[] {10},
+        params.containsKey("layers") ? (int[]) params.get("layers") : new int[] {64, 32, 16, 8},
+        (Map<String, Recommender>) params.get("recommenders"),
         params.containsKey("seed") ? (long) params.get("seed") : System.currentTimeMillis());
   }
 
@@ -80,25 +73,25 @@ public class NeuMF extends Recommender {
    * Model constructor
    *
    * @param datamodel DataModel instance
-   * @param numFactorsGMF Number of factors of GMF net. 10 by default
-   * @param numFactorsMLP Number of factors of MLP net. 10 by default
+   * @param numFactors Number of factors. 10 by default
    * @param datamodel DataModel instance
    * @param numEpochs Number of epochs
    * @param learningRate Learning rate
+   * @param recommenders Recommenders
    */
-  public NeuMF(
+  public StackingMF(
       DataModel datamodel,
-      int numFactorsGMF,
-      int numFactorsMLP,
+      int numFactors,
       int numEpochs,
-      double learningRate) {
+      double learningRate,
+      Map<String, Recommender> recommenders) {
     this(
         datamodel,
-        numFactorsGMF,
-        numFactorsMLP,
+        numFactors,
         numEpochs,
         learningRate,
-        new int[] {10},
+        new int[] {64, 32, 16, 8},
+        recommenders,
         System.currentTimeMillis());
   }
 
@@ -106,157 +99,185 @@ public class NeuMF extends Recommender {
    * Model constructor
    *
    * @param datamodel DataModel instance
-   * @param numFactorsGMF Number of factors of GMF net. 10 by default
-   * @param numFactorsMLP Number of factors of MLP net. 10 by default
+   * @param numFactors Number of factors. 10 by default
    * @param numEpochs Number of epochs
    * @param learningRate Learning rate
+   * @param recommenders Recommenders
    * @param seed random seed for random numbers generation
    */
-  public NeuMF(
+  public StackingMF(
       DataModel datamodel,
-      int numFactorsGMF,
-      int numFactorsMLP,
+      int numFactors,
       int numEpochs,
       double learningRate,
+      Map<String, Recommender> recommenders,
       long seed) {
-    this(datamodel, numFactorsGMF, numFactorsMLP, numEpochs, learningRate, new int[] {10}, seed);
-  }
-
-  /**
-   * Model constructor
-   *
-   * @param datamodel DataModel instance
-   * @param numFactorsGMF Number of factors of GMF net. 10 by default
-   * @param numFactorsMLP Number of factors of MLP net. 10 by default
-   * @param numEpochs Number of epochs
-   * @param learningRate Learning rate
-   * @param layers Array of layers neurons. [10] by default.
-   */
-  public NeuMF(
-      DataModel datamodel,
-      int numFactorsGMF,
-      int numFactorsMLP,
-      int numEpochs,
-      double learningRate,
-      int[] layers) {
     this(
         datamodel,
-        numFactorsGMF,
-        numFactorsMLP,
+        numFactors,
         numEpochs,
         learningRate,
-        layers,
-        System.currentTimeMillis());
+        new int[] {64, 32, 16, 8},
+        recommenders,
+        seed);
   }
 
   /**
    * Model constructor
    *
    * @param datamodel DataModel instance
+   * @param numFactors Number of factors. 10 by default
    * @param numEpochs Number of epochs
    * @param learningRate Learning rate
+   * @param layers Array of layers neurons. [64, 32, 16, 8] by default.
+   * @param recommenders Recommenders
    */
-  public NeuMF(DataModel datamodel, int numEpochs, double learningRate) {
-    this(datamodel, 10, 10, numEpochs, learningRate, new int[] {10}, System.currentTimeMillis());
-  }
-
-  /**
-   * Model constructor
-   *
-   * @param datamodel DataModel instance
-   * @param numEpochs Number of epochs
-   * @param learningRate Learning rate
-   * @param seed random seed for random numbers generation
-   */
-  public NeuMF(DataModel datamodel, int numEpochs, double learningRate, long seed) {
-    this(datamodel, 10, 10, numEpochs, learningRate, new int[] {10}, seed);
-  }
-
-  /**
-   * Model constructor
-   *
-   * @param datamodel DataModel instance
-   * @param numEpochs Number of epochs
-   * @param learningRate Learning rate
-   * @param layers Array of layers neurons. [10] by default.
-   */
-  public NeuMF(DataModel datamodel, int numEpochs, double learningRate, int[] layers) {
-    this(datamodel, 10, 10, numEpochs, learningRate, layers, System.currentTimeMillis());
-  }
-
-  /**
-   * Model constructor
-   *
-   * @param datamodel DataModel instance
-   * @param numEpochs Number of epochs
-   * @param learningRate Learning rate
-   * @param layers Array of layers neurons. [10] by default.
-   * @param seed Seed for random numbers generation
-   */
-  public NeuMF(
+  public StackingMF(
       DataModel datamodel,
-      int numFactorsGMF,
-      int numFactorsMLP,
+      int numFactors,
       int numEpochs,
       double learningRate,
       int[] layers,
+      Map<String, Recommender> recommenders) {
+    this(
+        datamodel,
+        numFactors,
+        numEpochs,
+        learningRate,
+        layers,
+        recommenders,
+        System.currentTimeMillis());
+  }
+
+  /**
+   * Model constructor
+   *
+   * @param datamodel DataModel instance
+   * @param numEpochs Number of epochs
+   * @param learningRate Learning rate
+   * @param recommenders Recommenders
+   */
+  public StackingMF(
+      DataModel datamodel,
+      int numEpochs,
+      double learningRate,
+      Map<String, Recommender> recommenders) {
+    this(
+        datamodel,
+        10,
+        numEpochs,
+        learningRate,
+        new int[] {64, 32, 16, 8},
+        recommenders,
+        System.currentTimeMillis());
+  }
+
+  /**
+   * Model constructor
+   *
+   * @param datamodel DataModel instance
+   * @param numEpochs Number of epochs
+   * @param learningRate Learning rate
+   * @param recommenders Recommenders
+   * @param seed random seed for random numbers generation
+   */
+  public StackingMF(
+      DataModel datamodel,
+      int numEpochs,
+      double learningRate,
+      Map<String, Recommender> recommenders,
+      long seed) {
+    this(datamodel, 10, numEpochs, learningRate, new int[] {64, 32, 16, 8}, recommenders, seed);
+  }
+
+  /**
+   * Model constructor
+   *
+   * @param datamodel DataModel instance
+   * @param numEpochs Number of epochs
+   * @param learningRate Learning rate
+   * @param layers Array of layers neurons. [64, 32, 16, 8] by default.
+   * @param recommenders Recommenders
+   */
+  public StackingMF(
+      DataModel datamodel,
+      int numEpochs,
+      double learningRate,
+      Map<String, Recommender> recommenders,
+      int[] layers) {
+    this(datamodel, 10, numEpochs, learningRate, layers, recommenders, System.currentTimeMillis());
+  }
+
+  /**
+   * Model constructor
+   *
+   * @param datamodel DataModel instance
+   * @param numEpochs Number of epochs
+   * @param learningRate Learning rate
+   * @param layers Array of layers neurons. [64, 32, 16, 8] by default.
+   * @param recommenders Recommenders
+   * @param seed Seed for random numbers generation
+   */
+  public StackingMF(
+      DataModel datamodel,
+      int numFactors,
+      int numEpochs,
+      double learningRate,
+      int[] layers,
+      Map<String, Recommender> recommenders,
       long seed) {
     super(datamodel);
 
     this.numEpochs = numEpochs;
-    this.numFactorsGMF = numFactorsGMF;
-    this.numFactorsMLP = numFactorsMLP;
+    this.numFactors = numFactors;
     this.learningRate = learningRate;
     this.layers = layers;
+    this.recommenders = recommenders;
+
+    String[] layersName = new String[recommenders.size() + 2];
+    layersName[0] = "user";
+    layersName[1] = "item";
+    int index = 2;
+    for (String recommenderName : recommenders.keySet()) {
+      layersName[index] = recommenderName;
+      index++;
+    }
 
     ComputationGraphConfiguration.GraphBuilder builder =
         new NeuralNetConfiguration.Builder()
             .seed(seed)
             .updater(new Adam(learningRate))
             .graphBuilder()
-            .addInputs("user", "item")
+            .addInputs(layersName)
             .addLayer(
-                "userEmbeddingLayerGMF",
+                "userEmbeddingLayer",
                 new EmbeddingLayer.Builder()
                     .nIn(super.getDataModel().getNumberOfUsers())
-                    .nOut(this.numFactorsGMF)
+                    .nOut(this.numFactors)
                     .build(),
                 "user")
             .addLayer(
-                "itemEmbeddingLayerGMF",
+                "itemEmbeddingLayer",
                 new EmbeddingLayer.Builder()
                     .nIn(super.getDataModel().getNumberOfItems())
-                    .nOut(this.numFactorsGMF)
+                    .nOut(this.numFactors)
                     .build(),
-                "item")
-            .addLayer(
-                "userEmbeddingLayerMLP",
-                new EmbeddingLayer.Builder()
-                    .nIn(super.getDataModel().getNumberOfUsers())
-                    .nOut(this.numFactorsMLP)
-                    .build(),
-                "user")
-            .addLayer(
-                "itemEmbeddingLayerMLP",
-                new EmbeddingLayer.Builder()
-                    .nIn(super.getDataModel().getNumberOfItems())
-                    .nOut(this.numFactorsMLP)
-                    .build(),
-                "item")
-            .addVertex(
-                "product",
-                new ElementWiseVertex(ElementWiseVertex.Op.Product),
-                "userEmbeddingLayerGMF",
-                "itemEmbeddingLayerGMF")
-            .addVertex(
-                "concat", new MergeVertex(), "userEmbeddingLayerMLP", "itemEmbeddingLayerMLP");
+                "item");
+
+    layersName[0] = "userEmbeddingLayer";
+    layersName[1] = "itemEmbeddingLayer";
+
+    builder.addVertex("concat", new MergeVertex(), layersName);
 
     int i = 0;
     for (; i < this.layers.length; i++) {
       if (i == 0)
         builder.addLayer(
             "hiddenLayer" + i,
-            new DenseLayer.Builder().nIn(this.numFactorsMLP * 2).nOut(layers[i]).build(),
+            new DenseLayer.Builder()
+                .nIn(this.numFactors * 2 + recommenders.size())
+                .nOut(layers[i])
+                .build(),
             "concat");
       else
         builder.addLayer(
@@ -266,15 +287,14 @@ public class NeuMF extends Recommender {
     }
 
     builder
-        .addVertex("finalConcat", new MergeVertex(), "product", "hiddenLayer" + (i - 1))
         .addLayer(
             "out",
             new OutputLayer.Builder(LossFunctions.LossFunction.MSE)
-                .nIn(layers[i - 1] + this.numFactorsGMF)
+                .nIn(layers[i - 1])
                 .nOut(1)
                 .activation(Activation.IDENTITY)
                 .build(),
-            "finalConcat")
+            "hiddenLayer" + (i - 1))
         .setOutputs("out")
         .build();
 
@@ -286,12 +306,16 @@ public class NeuMF extends Recommender {
   public void fit() {
     System.out.println("\nFitting " + this.toString());
 
-    NDArray[] X = new NDArray[2];
+    int numRecommenders = this.recommenders.size();
+
+    NDArray[] X = new NDArray[2 + numRecommenders];
     NDArray[] y = new NDArray[1];
 
     double[][] users = new double[super.getDataModel().getNumberOfRatings()][1];
     double[][] items = new double[super.getDataModel().getNumberOfRatings()][1];
     double[][] ratings = new double[super.getDataModel().getNumberOfRatings()][1];
+    double[][][] recommendersPredictions =
+        new double[numRecommenders][super.getDataModel().getNumberOfRatings()][1];
 
     int i = 0;
     for (User user : super.datamodel.getUsers()) {
@@ -301,6 +325,14 @@ public class NeuMF extends Recommender {
         users[i][0] = user.getUserIndex();
         items[i][0] = itemIndex;
         ratings[i][0] = user.getRatingAt(pos);
+
+        int indeX = 0;
+        for (Map.Entry<String, Recommender> recommender : recommenders.entrySet()) {
+          recommendersPredictions[indeX][i][0] =
+              recommender.getValue().predict(user.getUserIndex(), itemIndex);
+          indeX++;
+        }
+
         i++;
       }
     }
@@ -308,6 +340,12 @@ public class NeuMF extends Recommender {
     X[0] = new NDArray(users);
     X[1] = new NDArray(items);
     y[0] = new NDArray(ratings);
+
+    int indeX = 2;
+    for (Map.Entry<String, Recommender> recommender : recommenders.entrySet()) {
+      X[indeX] = new NDArray(recommendersPredictions[indeX - 2]);
+      indeX++;
+    }
 
     for (int epoch = 1; epoch <= this.numEpochs; epoch++) {
       this.network.fit(X, y);
@@ -325,15 +363,19 @@ public class NeuMF extends Recommender {
    * @return Prediction
    */
   public double predict(int userIndex, int itemIndex) {
+    int numRecommenders = this.recommenders.size();
 
-    NDArray[] X = new NDArray[2];
+    NDArray[] X = new NDArray[2 + numRecommenders];
 
-    double[][] aux = new double[1][1];
+    X[0] = new NDArray(new double[][] {{userIndex}});
+    X[1] = new NDArray(new double[][] {{itemIndex}});
 
-    aux[0][0] = userIndex;
-    X[0] = new NDArray(aux);
-    aux[0][0] = itemIndex;
-    X[1] = new NDArray(aux);
+    int indeX = 2;
+    for (Map.Entry<String, Recommender> recommender : recommenders.entrySet()) {
+      X[indeX] =
+          new NDArray(new double[][] {{recommender.getValue().predict(userIndex, itemIndex)}});
+      indeX++;
+    }
 
     INDArray[] y = this.network.output(X);
 
@@ -350,21 +392,12 @@ public class NeuMF extends Recommender {
   }
 
   /**
-   * Returns the number of latent factors of GMF net.
+   * Returns the number of latent factors.
    *
-   * @return Number of latent factors of GMF net.
+   * @return Number of latent factors.
    */
-  public int getGMFNumFactors() {
-    return this.numFactorsGMF;
-  }
-
-  /**
-   * Returns the number of latent factors of MLP net.
-   *
-   * @return Number of latent factors of MLP net.
-   */
-  public int getMLPNumFactors() {
-    return this.numFactorsMLP;
+  public int getNumFactors() {
+    return this.numFactors;
   }
 
   /**
@@ -388,15 +421,12 @@ public class NeuMF extends Recommender {
   @Override
   public String toString() {
     StringBuilder str =
-        new StringBuilder("NeuMF(")
+        new StringBuilder("StackingMF(")
             .append("numEpochs=")
             .append(this.numEpochs)
             .append("; ")
-            .append("numFactorsGMF=")
-            .append(this.numFactorsGMF)
-            .append("; ")
-            .append("numFactorsMLP=")
-            .append(this.numFactorsMLP)
+            .append("numFactors=")
+            .append(this.numFactors)
             .append("; ")
             .append("learningRate=")
             .append(this.learningRate)
